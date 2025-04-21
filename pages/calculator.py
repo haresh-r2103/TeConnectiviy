@@ -3,6 +3,8 @@ import pandas as pd
 from io import BytesIO
 from PIL import Image
 import os
+import plotly.express as px
+import plotly.graph_objects as go
 from utils.cost_formulas import (calculate_storage_cost,
                                  calculate_compute_cost, calculate_dbu_cost,
                                  calculate_photon_cost)
@@ -136,6 +138,12 @@ st.markdown("""
         }
         .back-button svg {
             margin-right: 5px;
+        }
+        .plot-container {
+            background-color: var(--card-color);
+            border-radius: 5px;
+            padding: 15px;
+            margin-bottom: 20px;
         }
     </style>
 """,
@@ -2130,3 +2138,125 @@ if layers_with_costs:
         )
 else:
     st.info("Configure at least one layer to see the cost summary.")
+
+# Add visualizations section after all layer configurations
+st.markdown("---")
+st.markdown('<h2 class="header">Cost Visualizations</h2>', unsafe_allow_html=True)
+
+# Process the cost data for visualizations
+def process_cost_data():
+    # Layer-wise cost breakdown
+    layers = list(st.session_state.all_costs.keys())
+    layer_costs = []
+    for layer in layers:
+        if st.session_state.all_costs[layer]:
+            # Only sum numeric values
+            total_cost = sum(
+                float(value) if isinstance(value, (int, float)) else 0
+                for value in st.session_state.all_costs[layer].values()
+            )
+            layer_costs.append({
+                'Layer': layer,
+                'Total Cost': total_cost
+            })
+    
+    # Component-wise cost breakdown
+    components = []
+    for layer in layers:
+        if st.session_state.all_costs[layer]:
+            for component, cost in st.session_state.all_costs[layer].items():
+                # Only include numeric costs
+                if isinstance(cost, (int, float)):
+                    components.append({
+                        'Layer': layer,
+                        'Component': component,
+                        'Cost': float(cost)
+                    })
+    
+    return pd.DataFrame(layer_costs), pd.DataFrame(components)
+
+# Process the data
+layer_df, component_df = process_cost_data()
+
+# Create visualization columns
+viz_col1, viz_col2 = st.columns(2)
+
+# Layer-wise Cost Distribution
+with viz_col1:
+    st.markdown('<div class="plot-container">', unsafe_allow_html=True)
+    st.subheader("Cost Distribution by Layer")
+    if not layer_df.empty:
+        fig_pie = px.pie(
+            layer_df,
+            values='Total Cost',
+            names='Layer',
+            color_discrete_sequence=px.colors.qualitative.Set3,
+            hole=0.4
+        )
+        fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+        st.plotly_chart(fig_pie, use_container_width=True)
+    else:
+        st.info("Configure costs to see the distribution.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Component-wise Cost Breakdown
+with viz_col2:
+    st.markdown('<div class="plot-container">', unsafe_allow_html=True)
+    st.subheader("Cost Breakdown by Component")
+    if not component_df.empty:
+        fig_bar = px.bar(
+            component_df,
+            x='Component',
+            y='Cost',
+            color='Layer',
+            color_discrete_sequence=['#FF8200', '#00A6A6', '#FF4B4B', '#FFD700']
+        )
+        fig_bar.update_layout(
+            xaxis_title="Cost Component",
+            yaxis_title="Cost ($)",
+            barmode='group'
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+    else:
+        st.info("Configure costs to see the breakdown.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Cost Comparison Across Layers
+st.markdown('<div class="plot-container">', unsafe_allow_html=True)
+st.subheader("Cost Comparison Across Layers")
+if not component_df.empty:
+    # Create pivot table with numeric values only
+    pivot_df = component_df.pivot(index='Layer', columns='Component', values='Cost')
+    fig_heatmap = px.imshow(
+        pivot_df,
+        color_continuous_scale='YlOrRd',
+        aspect='auto'
+    )
+    fig_heatmap.update_layout(
+        xaxis_title="Cost Component",
+        yaxis_title="Layer"
+    )
+    st.plotly_chart(fig_heatmap, use_container_width=True)
+else:
+    st.info("Configure costs to see the comparison.")
+st.markdown('</div>', unsafe_allow_html=True)
+
+# Add visualization controls
+st.sidebar.markdown("---")
+st.sidebar.header("Visualization Controls")
+
+# Layer selector
+selected_layers = st.sidebar.multiselect(
+    "Select Layers to Display",
+    options=list(st.session_state.all_costs.keys()),
+    default=list(st.session_state.all_costs.keys())
+)
+
+# Cost component selector
+if not component_df.empty:
+    available_components = component_df['Component'].unique()
+    selected_components = st.sidebar.multiselect(
+        "Select Cost Components",
+        options=available_components,
+        default=available_components
+    )
