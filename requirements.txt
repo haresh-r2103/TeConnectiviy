@@ -1,3 +1,27 @@
-streamlit
-pandas
-pillow
+# Core app
+streamlit==1.32.2
+
+# Data handling
+pandas==2.2.1
+numpy==1.26.4
+
+# Plotting (optional – only include what you use)
+matplotlib==3.8.3
+plotly==5.20.0
+seaborn==0.13.2
+
+# Databricks SQL connector (for SQL Warehouse)
+databricks-sql-connector==2.9.2
+
+# OR if using Databricks SDK (for REST/API access, jobs, etc.)
+databricks-sdk==0.20.0
+
+# Optional: for working with YAML config files
+pyyaml==6.0.1
+
+# Optional: for environment variable handling
+python-dotenv==1.0.1
+
+# Optional: for loading from .csv/.xlsx, etc.
+openpyxl==3.1.2
+
