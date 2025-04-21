@@ -1,0 +1,813 @@
+import streamlit as st
+import pandas as pd
+from io import BytesIO
+from PIL import Image
+import os
+
+# Set page config with professional color scheme
+st.set_page_config(
+    page_title="Databricks Cloud Cost Calculator",
+    page_icon="🧮",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS for better visibility
+st.markdown("""
+    <style>
+        :root {
+            --primary-color: #007BFF;
+            --secondary-color: #6c757d;
+            --background-color: #f5f5f5;
+            --card-color: #ffffff;
+            --text-color: #333333;
+            --success-color: #28a745;
+        }
+        .main {
+            background-color: var(--background-color);
+            color: var(--text-color);
+        }
+        .header {
+            color: var(--primary-color);
+            font-weight: bold;
+        }
+        .cost-card {
+            border-left: 4px solid var(--primary-color);
+            padding: 12px;
+            margin: 8px 0;
+            background-color: var(--card-color);
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            transition: transform 0.2s;
+        }
+        .cost-card:hover {
+            transform: translateY(-2px);
+        }
+        .total-card {
+            background-color: var(--card-color);
+            padding: 16px;
+            border-radius: 4px;
+            margin: 16px 0;
+            border: 1px solid var(--primary-color);
+        }
+        .logo-container {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+        .stNumberInput, .stTextInput, .stSelectbox {
+            margin-bottom: 15px;
+        }
+        .tab-content {
+            padding: 15px;
+            background-color: var(--card-color);
+            border-radius: 5px;
+            margin-top: 10px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .layer-tabs {
+            margin-bottom: 20px;
+        }
+        .cost-badge {
+            display: inline-block;
+            padding: 0.25em 0.4em;
+            font-size: 75%;
+            font-weight: 700;
+            line-height: 1;
+            text-align: center;
+            white-space: nowrap;
+            vertical-align: baseline;
+            border-radius: 0.25rem;
+            background-color: var(--primary-color);
+            color: white;
+        }
+        .stButton>button {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        .stButton>button:hover {
+            background-color: #0069d9;
+            color: white;
+        }
+        .success-badge {
+            background-color: var(--success-color);
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+# Logo placement at the top
+logo_path = "logo.png"
+if os.path.exists(logo_path):
+    logo = Image.open(logo_path)
+    st.markdown('<div class="logo-container">', unsafe_allow_html=True)
+    st.image(logo, width=200)
+    st.markdown('</div>', unsafe_allow_html=True)
+else:
+    st.warning("Logo image not found. Please ensure 'logo.png' is in the same directory.")
+
+# Cost constants (AWS only)
+COSTS = {
+    "S3": {
+        "Standard": 0.023,
+        "Intelligent-Tiering": 0.022,
+        "Standard-IA": 0.0125,
+        "OneZone-IA": 0.01,
+        "Glacier": 0.004,
+        "GlacierDeep": 0.00099
+    },
+    "EC2": {
+        "i3.xlarge": 0.312,
+        "i3.2xlarge": 0.624,
+        "i3.4xlarge": 1.248,
+        "i3.8xlarge": 2.496,
+        "i3.16xlarge": 4.992,
+        "r5.xlarge": 0.252,
+        "r5.2xlarge": 0.504,
+        "r5.4xlarge": 1.008,
+        "r5.8xlarge": 2.016,
+        "r5.12xlarge": 3.024
+    },
+    "DBU": {
+        "Enterprise": 0.75,
+        "DLT_Advanced": 0.36,
+        "DLT_Core": 0.20,
+        "DLT_Pro": 0.25,
+        "Jobs": 0.15
+    }
+}
+
+# Default compute configuration (hidden from user)
+DEFAULT_COMPUTE = {
+    "instance_type": "r5.xlarge",
+    "num_instances": 2,
+    "hours_per_day": 8,
+    "days_per_month": 22
+}
+
+# Main app
+st.markdown('<h1 class="header">🧮 Databricks Cloud Cost Calculator</h1>', unsafe_allow_html=True)
+st.markdown("""
+    Estimate your AWS costs for Databricks deployments. Configure each layer below.
+""")
+
+# Initialize session state for storing all costs
+if 'all_costs' not in st.session_state:
+    st.session_state.all_costs = {
+        "Landing": {},
+        "RAW": {},
+        "CONF": {},
+        "PB": {}
+    }
+
+# Layer tabs
+layer = st.selectbox("Select Layer to Configure", ["Landing", "RAW", "CONF", "PB"])
+
+# LANDING LAYER CONFIGURATION
+if layer == "Landing":
+    st.subheader("Landing Layer Configuration")
+    mode = st.radio("Estimation Mode", ["Simple", "Advanced"], horizontal=True, key="landing_mode")
+    
+    if mode == "Simple":
+        st.markdown('<div class="tab-content">', unsafe_allow_html=True)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            num_tables = st.number_input(
+                "Number of Tables", 
+                min_value=1, 
+                value=5,
+                help="Total number of tables in your landing zone"
+            )
+            avg_file_size = st.number_input(
+                "Average File Size (GB)", 
+                min_value=0.1, 
+                value=2.0,
+                help="Average size of each file in GB"
+            )
+            
+        with col2:
+            file_growth = st.number_input(
+                "Monthly Growth Rate (%)", 
+                min_value=0, 
+                max_value=100, 
+                value=5,
+                help="Expected monthly growth of your data"
+            )
+            files_per_day = st.number_input(
+                "Files Received Per Day", 
+                min_value=1, 
+                value=10,
+                help="Average number of files received daily"
+            )
+        
+        retention = st.selectbox(
+            "Retention Policy", 
+            ["30 days", "60 days", "90 days", "180 days", "1 year", "2 years", "Indefinite"],
+            help="How long should the data be retained?"
+        )
+        
+        storage_type = st.selectbox(
+            "Storage Tier",
+            list(COSTS["S3"].keys()),
+            help="Select the appropriate S3 storage tier"
+        )
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+    else:  # Advanced mode
+        st.markdown('<div class="tab-content">', unsafe_allow_html=True)
+        st.info("Add each landing table individually for precise estimation")
+        
+        # Initialize session state for tables if not exists
+        if 'landing_tables' not in st.session_state:
+            st.session_state.landing_tables = []
+        
+        # Form to add new tables
+        with st.form("add_table_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                table_name = st.text_input("Table Name", help="Unique name for this table")
+                avg_file_size = st.number_input("Average File Size (GB)", min_value=0.1, value=2.0)
+                
+            with col2:
+                files_per_day = st.number_input("Files Per Day", min_value=1, value=5)
+                retention = st.selectbox(
+                    "Retention Policy", 
+                    ["30 days", "60 days", "90 days", "180 days", "1 year", "2 years", "Indefinite"]
+                )
+            
+            if st.form_submit_button("Add Table"):
+                if table_name:
+                    if table_name in [t['name'] for t in st.session_state.landing_tables]:
+                        st.error("Table with this name already exists!")
+                    else:
+                        st.session_state.landing_tables.append({
+                            'name': table_name,
+                            'avg_file_size': avg_file_size,
+                            'files_per_day': files_per_day,
+                            'retention': retention
+                        })
+                        st.success(f"Table '{table_name}' added!")
+                else:
+                    st.error("Please enter a table name")
+        
+        # Display added tables
+        if st.session_state.landing_tables:
+            st.subheader("Your Landing Tables")
+            df_tables = pd.DataFrame(st.session_state.landing_tables)
+            st.dataframe(df_tables)
+            
+            if st.button("Clear All Tables"):
+                st.session_state.landing_tables = []
+                st.experimental_rerun()
+        
+        storage_type = st.selectbox(
+            "Storage Tier",
+            list(COSTS["S3"].keys()),
+            help="Select the appropriate S3 storage tier"
+        )
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+
+# RAW LAYER CONFIGURATION
+elif layer == "RAW":
+    st.subheader("RAW Layer Configuration")
+    mode = st.radio("Estimation Mode", ["Simple", "Advanced"], horizontal=True, key="raw_mode")
+    
+    if mode == "Simple":
+        st.markdown('<div class="tab-content">', unsafe_allow_html=True)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            num_jobs = st.number_input(
+                "Number of Jobs", 
+                min_value=1, 
+                value=3,
+                help="Total number of processing jobs"
+            )
+            num_tables = st.number_input(
+                "Number of Tables", 
+                min_value=1, 
+                value=10,
+                help="Number of tables being processed"
+            )
+            
+        with col2:
+            instance_family = st.selectbox(
+                "Instance Family",
+                ["General Purpose (r5)", "Memory Optimized (r5)", "Compute Optimized (i3)"],
+                help="Select the instance family for your jobs"
+            )
+            avg_runs_per_month = st.number_input(
+                "Average Runs per Month", 
+                min_value=1, 
+                value=30,
+                help="How many times each job runs per month"
+            )
+        
+        avg_job_duration = st.number_input(
+            "Average Job Duration (minutes)", 
+            min_value=1, 
+            value=45,
+            help="Average runtime duration for each job"
+        )
+        
+        storage_type = st.selectbox(
+            "Storage Tier",
+            list(COSTS["S3"].keys()),
+            help="Select the appropriate S3 storage tier"
+        )
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+    else:  # Advanced mode
+        st.markdown('<div class="tab-content">', unsafe_allow_html=True)
+        st.info("Add each job individually with specific configurations")
+        
+        # Initialize session state for jobs if not exists
+        if 'raw_jobs' not in st.session_state:
+            st.session_state.raw_jobs = []
+        
+        # Form to add new jobs
+        with st.form("add_job_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                job_name = st.text_input("Job Name", help="Unique name for this job")
+                instance_type = st.selectbox(
+                    "Instance Type",
+                    list(COSTS["EC2"].keys()),
+                    help="Select specific instance type"
+                )
+                
+            with col2:
+                avg_duration = st.number_input(
+                    "Average Duration (min)", 
+                    min_value=1, 
+                    value=30,
+                    help="Average runtime for this job"
+                )
+                runs_per_month = st.number_input(
+                    "Runs per Month", 
+                    min_value=1, 
+                    value=30,
+                    help="How many times this job runs monthly"
+                )
+            
+            if st.form_submit_button("Add Job"):
+                if job_name:
+                    if job_name in [j['name'] for j in st.session_state.raw_jobs]:
+                        st.error("Job with this name already exists!")
+                    else:
+                        st.session_state.raw_jobs.append({
+                            'name': job_name,
+                            'instance_type': instance_type,
+                            'avg_duration': avg_duration,
+                            'runs_per_month': runs_per_month
+                        })
+                        st.success(f"Job '{job_name}' added!")
+                else:
+                    st.error("Please enter a job name")
+        
+        # Display added jobs
+        if st.session_state.raw_jobs:
+            st.subheader("Your RAW Jobs")
+            df_jobs = pd.DataFrame(st.session_state.raw_jobs)
+            st.dataframe(df_jobs)
+            
+            if st.button("Clear All Jobs"):
+                st.session_state.raw_jobs = []
+                st.experimental_rerun()
+        
+        num_tables = st.number_input(
+            "Number of Tables", 
+            min_value=1, 
+            value=10,
+            help="Number of tables being processed"
+        )
+        
+        storage_type = st.selectbox(
+            "Storage Tier",
+            list(COSTS["S3"].keys()),
+            help="Select the appropriate S3 storage tier"
+        )
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+
+# CONF LAYER CONFIGURATION
+elif layer == "CONF":
+    st.subheader("CONF Layer Configuration")
+    mode = st.radio("Estimation Mode", ["Simple", "Advanced"], horizontal=True, key="conf_mode")
+    
+    if mode == "Simple":
+        st.markdown('<div class="tab-content">', unsafe_allow_html=True)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            num_pipelines = st.number_input(
+                "Number of Pipelines", 
+                min_value=1, 
+                value=3,
+                help="Total number of data pipelines"
+            )
+            num_tables = st.number_input(
+                "Number of Tables", 
+                min_value=1, 
+                value=15,
+                help="Number of curated tables"
+            )
+            
+        with col2:
+            pipeline_complexity = st.selectbox(
+                "Pipeline Complexity",
+                ["Simple", "Medium", "Complex"],
+                help="Complexity of your transformation pipelines"
+            )
+            avg_runs_per_month = st.number_input(
+                "Average Runs per Month", 
+                min_value=1, 
+                value=60,
+                help="How many times each pipeline runs per month"
+            )
+        
+        avg_duration = st.number_input(
+            "Average Pipeline Duration (minutes)", 
+            min_value=1, 
+            value=30,
+            help="Average runtime duration for each pipeline"
+        )
+        
+        storage_type = st.selectbox(
+            "Storage Tier",
+            list(COSTS["S3"].keys()),
+            help="Select the appropriate S3 storage tier"
+        )
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+    else:  # Advanced mode
+        st.markdown('<div class="tab-content">', unsafe_allow_html=True)
+        st.info("Add each pipeline individually with specific configurations")
+        
+        # Initialize session state for pipelines if not exists
+        if 'conf_pipelines' not in st.session_state:
+            st.session_state.conf_pipelines = []
+        
+        # Form to add new pipelines
+        with st.form("add_pipeline_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                pipeline_name = st.text_input("Pipeline Name", help="Unique name for this pipeline")
+                instance_type = st.selectbox(
+                    "Instance Type",
+                    list(COSTS["EC2"].keys()),
+                    help="Select specific instance type"
+                )
+                
+            with col2:
+                avg_duration = st.number_input(
+                    "Average Duration (min)", 
+                    min_value=1, 
+                    value=30,
+                    help="Average runtime for this pipeline"
+                )
+                runs_per_month = st.number_input(
+                    "Runs per Month", 
+                    min_value=1, 
+                    value=60,
+                    help="How many times this pipeline runs monthly"
+                )
+            
+            dlt_type = st.selectbox(
+                "DLT Type",
+                ["DLT_Advanced", "DLT_Core", "DLT_Pro"],
+                help="Select the DLT type for this pipeline"
+            )
+            
+            if st.form_submit_button("Add Pipeline"):
+                if pipeline_name:
+                    if pipeline_name in [p['name'] for p in st.session_state.conf_pipelines]:
+                        st.error("Pipeline with this name already exists!")
+                    else:
+                        st.session_state.conf_pipelines.append({
+                            'name': pipeline_name,
+                            'instance_type': instance_type,
+                            'avg_duration': avg_duration,
+                            'runs_per_month': runs_per_month,
+                            'dlt_type': dlt_type
+                        })
+                        st.success(f"Pipeline '{pipeline_name}' added!")
+                else:
+                    st.error("Please enter a pipeline name")
+        
+        # Display added pipelines
+        if st.session_state.conf_pipelines:
+            st.subheader("Your CONF Pipelines")
+            df_pipelines = pd.DataFrame(st.session_state.conf_pipelines)
+            st.dataframe(df_pipelines)
+            
+            if st.button("Clear All Pipelines"):
+                st.session_state.conf_pipelines = []
+                st.experimental_rerun()
+        
+        num_tables = st.number_input(
+            "Number of Tables", 
+            min_value=1, 
+            value=15,
+            help="Number of curated tables"
+        )
+        
+        storage_type = st.selectbox(
+            "Storage Tier",
+            list(COSTS["S3"].keys()),
+            help="Select the appropriate S3 storage tier"
+        )
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+
+# PB LAYER CONFIGURATION
+elif layer == "PB":
+    st.subheader("PB Layer Configuration")
+    st.markdown('<div class="tab-content">', unsafe_allow_html=True)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        num_jobs = st.number_input("Number of Scheduled Jobs", min_value=1, value=5)
+    with col2:
+        avg_duration = st.number_input("Avg Job Duration (min)", min_value=1, value=45)
+    
+    jobs_per_day = st.number_input("Job Runs per Day", min_value=1, value=1)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Calculate button for the current layer
+if st.button(f"Calculate {layer} Layer Costs", type="primary"):
+    cost_breakdown = {}
+    
+    # LANDING LAYER CALCULATION
+    if layer == "Landing":
+        storage_cost_per_gb = COSTS["S3"][storage_type]
+        
+        if mode == "Simple":
+            total_storage = num_tables * avg_file_size * files_per_day * 30  # Simple estimation
+        else:
+            # Advanced mode calculation
+            if st.session_state.landing_tables:
+                total_storage = sum(
+                    t['avg_file_size'] * t['files_per_day'] * 30 
+                    for t in st.session_state.landing_tables
+                )
+            else:
+                total_storage = 0
+                st.warning("No tables added in Advanced mode")
+        
+        storage_cost = total_storage * storage_cost_per_gb
+        cost_breakdown[f"S3 Storage ({storage_type})"] = round(storage_cost, 2)
+    
+    # RAW LAYER CALCULATION
+    elif layer == "RAW":
+        storage_cost_per_gb = COSTS["S3"][storage_type]
+        total_storage = num_tables * 5  # Assuming 5GB per table as average
+        storage_cost = total_storage * storage_cost_per_gb
+        cost_breakdown[f"S3 Storage ({storage_type})"] = round(storage_cost, 2)
+        
+        if mode == "Simple":
+            # Simple mode calculation
+            instance_type = "r5.xlarge"  # Default for general purpose
+            if instance_family == "Memory Optimized (r5)":
+                instance_type = "r5.2xlarge"
+            elif instance_family == "Compute Optimized (i3)":
+                instance_type = "i3.xlarge"
+            
+            # Compute costs
+            vm_cost_per_hour = COSTS["EC2"][instance_type]
+            compute_hours = num_jobs * (avg_job_duration / 60) * avg_runs_per_month
+            vm_cost = compute_hours * vm_cost_per_hour
+            cost_breakdown[f"EC2 Compute ({instance_type})"] = round(vm_cost, 2)
+            
+            # DBU costs
+            dbu_rate = COSTS["DBU"]["Enterprise"]
+            dbu_cost = num_jobs * avg_job_duration * dbu_rate * avg_runs_per_month / 60
+            cost_breakdown["Databricks DBU"] = round(dbu_cost, 2)
+        else:
+            # Advanced mode calculation
+            if st.session_state.raw_jobs:
+                total_vm_cost = 0
+                total_dbu_cost = 0
+                
+                for job in st.session_state.raw_jobs:
+                    # Compute costs
+                    vm_cost_per_hour = COSTS["EC2"][job['instance_type']]
+                    compute_hours = (job['avg_duration'] / 60) * job['runs_per_month']
+                    total_vm_cost += compute_hours * vm_cost_per_hour
+                    
+                    # DBU costs
+                    dbu_rate = COSTS["DBU"]["Enterprise"]
+                    total_dbu_cost += job['avg_duration'] * dbu_rate * job['runs_per_month'] / 60
+                
+                cost_breakdown["EC2 Compute (various)"] = round(total_vm_cost, 2)
+                cost_breakdown["Databricks DBU"] = round(total_dbu_cost, 2)
+            else:
+                st.warning("No jobs added in Advanced mode")
+    
+    # CONF LAYER CALCULATION
+    elif layer == "CONF":
+        storage_cost_per_gb = COSTS["S3"][storage_type]
+        total_storage = num_tables * 10  # Assuming 10GB per table as average
+        storage_cost = total_storage * storage_cost_per_gb
+        cost_breakdown[f"S3 Storage ({storage_type})"] = round(storage_cost, 2)
+        
+        if mode == "Simple":
+            # Simple mode calculation
+            instance_type = "r5.xlarge"  # Default instance
+            
+            # Adjust based on pipeline complexity
+            if pipeline_complexity == "Medium":
+                instance_type = "r5.2xlarge"
+            elif pipeline_complexity == "Complex":
+                instance_type = "r5.4xlarge"
+            
+            # Compute costs
+            vm_cost_per_hour = COSTS["EC2"][instance_type]
+            compute_hours = num_pipelines * (avg_duration / 60) * avg_runs_per_month
+            vm_cost = compute_hours * vm_cost_per_hour
+            cost_breakdown[f"EC2 Compute ({instance_type})"] = round(vm_cost, 2)
+            
+            # DLT costs (using Advanced as default)
+            dlt_rate = COSTS["DBU"]["DLT_Advanced"]
+            dlt_cost = num_pipelines * avg_duration * dlt_rate * avg_runs_per_month / 60
+            cost_breakdown["DLT Compute"] = round(dlt_cost, 2)
+            
+            # DBU costs
+            dbu_rate = COSTS["DBU"]["Enterprise"]
+            dbu_cost = num_pipelines * avg_duration * dbu_rate * avg_runs_per_month / 60
+            cost_breakdown["Databricks DBU"] = round(dbu_cost, 2)
+        else:
+            # Advanced mode calculation
+            if st.session_state.conf_pipelines:
+                total_vm_cost = 0
+                total_dlt_cost = 0
+                total_dbu_cost = 0
+                
+                for pipeline in st.session_state.conf_pipelines:
+                    # Compute costs
+                    vm_cost_per_hour = COSTS["EC2"][pipeline['instance_type']]
+                    compute_hours = (pipeline['avg_duration'] / 60) * pipeline['runs_per_month']
+                    total_vm_cost += compute_hours * vm_cost_per_hour
+                    
+                    # DLT costs
+                    dlt_rate = COSTS["DBU"][pipeline['dlt_type']]
+                    total_dlt_cost += pipeline['avg_duration'] * dlt_rate * pipeline['runs_per_month'] / 60
+                    
+                    # DBU costs
+                    dbu_rate = COSTS["DBU"]["Enterprise"]
+                    total_dbu_cost += pipeline['avg_duration'] * dbu_rate * pipeline['runs_per_month'] / 60
+                
+                cost_breakdown["EC2 Compute (various)"] = round(total_vm_cost, 2)
+                cost_breakdown["DLT Compute"] = round(total_dlt_cost, 2)
+                cost_breakdown["Databricks DBU"] = round(total_dbu_cost, 2)
+            else:
+                st.warning("No pipelines added in Advanced mode")
+    
+    # PB LAYER CALCULATION
+    elif layer == "PB":
+        # Jobs compute
+        jobs_rate = COSTS["DBU"]["Jobs"]
+        jobs_cost = num_jobs * avg_duration * jobs_rate * jobs_per_day * 22 / 60  # 22 working days
+        cost_breakdown["Jobs Compute"] = round(jobs_cost, 2)
+    
+    # Store the costs in session state
+    st.session_state.all_costs[layer] = cost_breakdown
+    
+    # Display results with enhanced visualization
+    st.markdown("---")
+    st.subheader(f"💵 {layer} Layer Cost Breakdown")
+    
+    # Create columns for better layout
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Display cards for each cost type
+        for cost_type, amount in cost_breakdown.items():
+            st.markdown(f"""
+                <div class="cost-card">
+                    <strong>{cost_type}</strong>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span>Monthly Cost</span>
+                        <span class="cost-badge">${amount:,.2f}</span>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+    
+    with col2:
+        # Calculate and display totals for this layer
+        total_monthly = sum(cost_breakdown.values())
+        
+        st.markdown(f"""
+            <div class="total-card">
+                <h3>💰 {layer} Layer Summary</h3>
+                <div style="display: flex; justify-content: space-between;">
+                    <span>Total Monthly Cost:</span>
+                    <span class="cost-badge success-badge">${total_monthly:,.2f}</span>
+                </div>
+                <div style="margin-top: 15px;">
+                    <small><i>Costs are estimates based on your inputs and current AWS pricing</i></small>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+# Display consolidated costs if any layers have been calculated
+if any(st.session_state.all_costs.values()):
+    st.markdown("---")
+    st.subheader("🏢 Consolidated Costs Across All Layers")
+    
+    # Combine all costs
+    combined_costs = {}
+    for layer, costs in st.session_state.all_costs.items():
+        if costs:  # Only include layers with calculations
+            for cost_type, amount in costs.items():
+                combined_costs[f"{layer} - {cost_type}"] = amount
+    
+    # Create columns for better layout
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # Display combined costs
+        st.markdown("#### Detailed Cost Breakdown")
+        for cost_type, amount in combined_costs.items():
+            st.markdown(f"""
+                <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #eee;">
+                    <span>{cost_type}</span>
+                    <span>${amount:,.2f}</span>
+                </div>
+            """, unsafe_allow_html=True)
+    
+    with col2:
+        # Calculate and display grand totals
+        grand_total = sum(combined_costs.values())
+        
+        st.markdown(f"""
+            <div class="total-card">
+                <h3>💰 Grand Total</h3>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <span>Monthly Cost:</span>
+                    <span class="cost-badge success-badge" style="font-size: 1.2rem;">${grand_total:,.2f}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between;">
+                    <span>Daily Cost:</span>
+                    <span>${grand_total/30:,.2f}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between;">
+                    <span>Hourly Cost:</span>
+                    <span>${grand_total/(30*24):,.2f}</span>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+    
+    # Create downloadable Excel report
+    df = pd.DataFrame(list(combined_costs.items()), columns=["Cost Type", "USD ($)"])
+    df.loc[len(df)] = ["Total Monthly Cost", grand_total]
+    df.loc[len(df)] = ["Total Daily Cost", grand_total/30]
+    df.loc[len(df)] = ["Total Hourly Cost", grand_total/(30*24)]
+    
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Cost Breakdown')
+        
+        # Add some formatting to the Excel file
+        workbook = writer.book
+        worksheet = writer.sheets['Cost Breakdown']
+        
+        # Add a header format
+        header_format = workbook.add_format({
+            'bold': True,
+            'text_wrap': True,
+            'valign': 'top',
+            'fg_color': '#007BFF',
+            'font_color': 'white',
+            'border': 1
+        })
+        
+        # Write the column headers with the defined format
+        for col_num, value in enumerate(df.columns.values):
+            worksheet.write(0, col_num, value, header_format)
+        
+        # Add a total row format
+        total_format = workbook.add_format({
+            'bold': True,
+            'fg_color': '#D4EDDA',
+            'border': 1
+        })
+        
+        # Format the total rows
+        for row in range(len(df)-3, len(df)):
+            worksheet.set_row(row, None, total_format)
+    
+    output.seek(0)
+    
+    st.download_button(
+        label="📤 Download Full Report (Excel)",
+        data=output,
+        file_name="databricks_cost_estimate_full.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="Download a detailed Excel report with all cost breakdowns"
+    )
