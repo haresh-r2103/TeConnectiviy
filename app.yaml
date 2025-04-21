@@ -1,0 +1,12 @@
+env:
+  - name: STREAMLIT_VERSION
+    value: "1.10.0"
+  - name: PANDAS_VERSION
+    value: "1.4.2"
+  - name: PILLOW_VERSION
+    value: "9.1.0"
+  - name: RESOURCE_ACCESS
+    value: "budget-estimation-te"
+command:
+  - "python"
+  - "home.py"
